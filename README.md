@@ -9,6 +9,9 @@ space usage in duplicated directory trees (i.e. for vservers).
 Usage
 =====
 ```bash
-$ cp -rl /base /copy
-$ fusermount blah blah
+$ cp -rl base/ copy/
+$ ./simple-cow mnt -o src_dir=base -o cow_dir=copy
 ```
+
+mnt will be a mirror of copy, however, write operations inside mnt will not affect files
+in base.
