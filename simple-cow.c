@@ -1,13 +1,10 @@
 /*
- * The simple cow makes no pretence about performance. The astute
- * reader will notice this is mostly fusexmp.c.
+ * See LICENSE.
+ *
+ * The simple cow makes no pretence about performance.
  */
 #define FUSE_USE_VERSION 26
 #define SIMPLE_COW_VERSION "0.1"
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
 
 #ifdef linux
 /* For pread()/pwrite()/utimensat() */
@@ -25,34 +22,106 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <pthread.h>
 
-static int cow_getattr(const char *path, struct stat *stbuf)
+struct cow_config {
+  char* src_dir;
+  char* cow_dir;
+};
+
+static struct cow_config the_config = {0};
+pthread_mutex_t the_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static char* pathcat(const char* head, const char* tail) {
+  char* ret = malloc(strlen(head) + strlen(tail) + 2);
+  if (ret == NULL) { abort(); }
+
+  ret[0] = '\0';
+  strcat(ret, head);
+
+  if (tail[0] == '\0') { return ret; }
+
+  if (head[strlen(head)-1] != '/' && tail[0] != '/') {
+    strcat(ret, "/");
+  }
+  strcat(ret, tail);
+
+  return ret;
+}
+
+static void copy_file(const char* src, const char* dst) {
+  pthread_mutex_lock(&the_lock);
+  // XXX/bowei -- get rid of system()
+  char buf[1024];
+  sprintf(buf, "cp -f %s %s.simple_cow_copy", src, dst);
+  fprintf(stderr, "%s\n", buf);
+  system(buf);
+
+  sprintf(buf, "mv %s.simple_cow_copy %s", dst, dst);
+  system(buf);
+
+  pthread_mutex_unlock(&the_lock);
+}
+
+static void maybe_copy(const char* path) {
+  char* src_path = pathcat(the_config.src_dir, path);
+  char* cow_path = pathcat(the_config.cow_dir, path);
+
+  struct stat src_st, cow_st;
+  int ret;
+
+  ret = stat(src_path, &src_st);
+  if (ret < 0) { goto end; }
+
+  ret = stat(cow_path, &cow_st);
+  if (ret < 0) { goto end; }
+
+  if (src_st.st_ino == cow_st.st_ino) {
+    copy_file(src_path, cow_path);
+  }
+
+end:
+  free(src_path);
+  free(cow_path);
+}
+
+static int cow_getattr(const char *orig_path, struct stat *stbuf)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = lstat(path, stbuf);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_access(const char *path, int mask)
+static int cow_access(const char *orig_path, int mask)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = access(path, mask);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_readlink(const char *path, char *buf, size_t size)
+static int cow_readlink(const char* orig_path, char *buf, size_t size)
 {
   int res;
 
+  // XXX/bowei -- needs adjusting
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = readlink(path, buf, size - 1);
+  free(path);
+
   if (res == -1)
     return -errno;
 
@@ -61,7 +130,8 @@ static int cow_readlink(const char *path, char *buf, size_t size)
 }
 
 
-static int cow_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+static int cow_readdir(const char* orig_path, void *buf,
+                       fuse_fill_dir_t filler,
                        off_t offset, struct fuse_file_info *fi)
 {
   DIR *dp;
@@ -70,7 +140,10 @@ static int cow_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   (void) offset;
   (void) fi;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   dp = opendir(path);
+  free(path);
+
   if (dp == NULL)
     return -errno;
 
@@ -87,10 +160,11 @@ static int cow_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   return 0;
 }
 
-static int cow_mknod(const char *path, mode_t mode, dev_t rdev)
+static int cow_mknod(const char* orig_path, mode_t mode, dev_t rdev)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   /* On Linux this could just be 'mknod(path, mode, rdev)' but this
      is more portable */
   if (S_ISREG(mode)) {
@@ -101,39 +175,51 @@ static int cow_mknod(const char *path, mode_t mode, dev_t rdev)
     res = mkfifo(path, mode);
   else
     res = mknod(path, mode, rdev);
+
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_mkdir(const char *path, mode_t mode)
+static int cow_mkdir(const char* orig_path, mode_t mode)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = mkdir(path, mode);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_unlink(const char *path)
+static int cow_unlink(const char* orig_path)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = unlink(path);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_rmdir(const char *path)
+static int cow_rmdir(const char* orig_path)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = rmdir(path);
+  free(path);
+
   if (res == -1)
     return -errno;
 
@@ -144,73 +230,106 @@ static int cow_symlink(const char *from, const char *to)
 {
   int res;
 
+  // XXX/bowei -- what to do here
   res = symlink(from, to);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_rename(const char *from, const char *to)
+static int cow_rename(const char *orig_from, const char *orig_to)
 {
   int res;
+
+  char* from = pathcat(the_config.cow_dir, orig_from);
+  char* to = pathcat(the_config.cow_dir, orig_to);
 
   res = rename(from, to);
+
+  free(from);
+  free(to);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_link(const char *from, const char *to)
+static int cow_link(const char *orig_from, const char *orig_to)
 {
   int res;
+
+  char* from = pathcat(the_config.cow_dir, orig_from);
+  char* to = pathcat(the_config.cow_dir, orig_to);
 
   res = link(from, to);
+
+  free(from);
+  free(to);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_chmod(const char *path, mode_t mode)
+static int cow_chmod(const char* orig_path, mode_t mode)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = chmod(path, mode);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_chown(const char *path, uid_t uid, gid_t gid)
+static int cow_chown(const char* orig_path, uid_t uid, gid_t gid)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = lchown(path, uid, gid);
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_truncate(const char *path, off_t size)
+static int cow_truncate(const char* orig_path, off_t size)
 {
   int res;
 
+  maybe_copy(orig_path);
+
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = truncate(path, size);
+  // XXX
+  free(path);
+
   if (res == -1)
     return -errno;
 
   return 0;
 }
 
-static int cow_open(const char *path, struct fuse_file_info *fi)
+static int cow_open(const char* orig_path, struct fuse_file_info *fi)
 {
   int res;
 
+  maybe_copy(orig_path);
+
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = open(path, fi->flags);
+  free(path);
+
   if (res == -1)
     return -errno;
 
@@ -218,14 +337,19 @@ static int cow_open(const char *path, struct fuse_file_info *fi)
   return 0;
 }
 
-static int cow_read(const char *path, char *buf, size_t size, off_t offset,
+static int cow_read(const char* orig_path, char *buf,
+                    size_t size, off_t offset,
                     struct fuse_file_info *fi)
 {
   int fd;
   int res;
 
   (void) fi;
+
+  char* path = pathcat(the_config.cow_dir, orig_path);
   fd = open(path, O_RDONLY);
+  free(path);
+
   if (fd == -1)
     return -errno;
 
@@ -237,14 +361,20 @@ static int cow_read(const char *path, char *buf, size_t size, off_t offset,
   return res;
 }
 
-static int cow_write(const char *path, const char *buf, size_t size,
+static int cow_write(const char* orig_path, const char *buf, size_t size,
                      off_t offset, struct fuse_file_info *fi)
 {
   int fd;
   int res;
 
   (void) fi;
+
+  maybe_copy(orig_path);
+
+  char* path = pathcat(the_config.cow_dir, orig_path);
   fd = open(path, O_WRONLY);
+  free(path);
+
   if (fd == -1)
     return -errno;
 
@@ -256,36 +386,17 @@ static int cow_write(const char *path, const char *buf, size_t size,
   return res;
 }
 
-static int cow_statfs(const char *path, struct statvfs *stbuf)
+static int cow_statfs(const char* orig_path, struct statvfs *stbuf)
 {
   int res;
 
+  char* path = pathcat(the_config.cow_dir, orig_path);
   res = statvfs(path, stbuf);
+  free(path);
+
   if (res == -1)
     return -errno;
 
-  return 0;
-}
-
-static int cow_release(const char *path, struct fuse_file_info *fi)
-{
-  /* Just a stub.	 This method is optional and can safely be left
-     unimplemented */
-
-  (void) path;
-  (void) fi;
-  return 0;
-}
-
-static int cow_fsync(const char *path, int isdatasync,
-                     struct fuse_file_info *fi)
-{
-  /* Just a stub.	 This method is optional and can safely be left
-     unimplemented */
-
-  (void) path;
-  (void) isdatasync;
-  (void) fi;
   return 0;
 }
 
@@ -307,17 +418,10 @@ static struct fuse_operations cow_oper = {
   .open    = cow_open,
   .read    = cow_read,
   .write   = cow_write, // x
-  .statfs  = cow_statfs,
-  .release = cow_release,
-  .fsync   = cow_fsync,
+  .statfs  = cow_statfs
 };
 
 enum { KEY_HELP, KEY_VERSION };
-
-struct cow_config {
-  char* src_dir;
-  char* cow_dir;
-};
 
 static struct fuse_opt cow_opts[] = {
   { "src_dir=%s", offsetof(struct cow_config, src_dir), 0},
@@ -328,8 +432,6 @@ static struct fuse_opt cow_opts[] = {
   FUSE_OPT_KEY("--version", KEY_VERSION),
   FUSE_OPT_END
 };
-
-static struct cow_config the_config = {0};
 
 static int cow_opt_proc(void *data, const char *arg, int key,
                         struct fuse_args *outargs)

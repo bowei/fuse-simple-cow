@@ -1,5 +1,5 @@
 CFLAGS := -Wall -D_FILE_OFFSET_BITS=64
-CLIBS := -lfuse
+CLIBS := -lfuse -pthread
 
 all: simple-cow
 
